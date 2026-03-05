@@ -1,0 +1,23 @@
+﻿<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="90" y1="40" x2="1110" y2="610" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFDF7"/>
+      <stop offset="1" stop-color="#ECE2CF"/>
+    </linearGradient>
+    <linearGradient id="sheet" x1="310" y1="130" x2="900" y2="510" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFCF5"/>
+      <stop offset="1" stop-color="#F7F1E5"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" rx="36" fill="url(#bg)"/>
+  <rect x="240" y="96" width="720" height="438" rx="26" fill="url(#sheet)" stroke="#CFC2AD"/>
+  <path d="M300 196H900" stroke="#D9CFBF"/>
+  <path d="M300 250H900" stroke="#E4DACB"/>
+  <path d="M300 304H900" stroke="#E4DACB"/>
+  <path d="M300 358H900" stroke="#E4DACB"/>
+  <path d="M300 412H900" stroke="#E4DACB"/>
+  <rect x="760" y="472" width="164" height="40" rx="12" fill="#252017"/>
+  <text x="842" y="497" text-anchor="middle" fill="#FFFDF7" font-family="Consolas, monospace" font-size="16" letter-spacing="1.5">REVIEW</text>
+  <text x="96" y="154" fill="#1F1C16" font-family="Palatino Linotype, Book Antiqua, serif" font-size="66" font-weight="600">Review My Draft</text>
+  <text x="96" y="206" fill="#5E5548" font-family="Consolas, monospace" font-size="21" letter-spacing="2">Persona-guided inline edits and margin comments</text>
+</svg>

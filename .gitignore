@@ -1,0 +1,19 @@
+# Dependency/install output
+node_modules/
+
+# Build output
+dist/
+
+# Netlify local state
+.netlify/
+
+# Local environment secrets
+.env
+.env.local
+.env.*.local
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
