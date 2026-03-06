@@ -9,7 +9,13 @@
  *   thread: [{ role: 'user'|'assistant', text: string }]
  * }
  * Returns:
- * { assistant_reply: string, updated_suggestion: { replacement, comment } | null }
+ * {
+ *   assistant_reply: string,
+ *   stance: 'withdraw' | 'optional_alternative' | 'defend',
+ *   author_intent_acknowledged: boolean,
+ *   reasoning: string,
+ *   updated_suggestion: { replacement, comment } | null
+ * }
  */
 
 // Environment/configuration.
@@ -25,6 +31,8 @@ const WORKSHOP_TIMEOUT_MS = Number(process.env.WORKSHOP_TIMEOUT_MS || 26000)
 const MAX_CHARS = 20000
 const MAX_USER_REPLY = 1800
 const MAX_THREAD_MESSAGES = 12
+const MAX_REASONING_CHARS = 800
+const WORKSHOP_STANCES = new Set(['withdraw', 'optional_alternative', 'defend'])
 
 // Short persona profiles used for workshop tone + priorities.
 const PERSONA_PROMPTS = {
@@ -196,6 +204,9 @@ function buildWorkshopPrompt({ text, personaKey, suggestion, userReply, thread }
         'Output schema:',
         '{',
         '  "assistant_reply": string,',
+        '  "stance": "withdraw" | "optional_alternative" | "defend",',
+        '  "author_intent_acknowledged": boolean,',
+        '  "reasoning": string,',
         '  "updated_suggestion": {',
         '    "replacement": string,',
         '    "comment": string',
@@ -204,9 +215,16 @@ function buildWorkshopPrompt({ text, personaKey, suggestion, userReply, thread }
         '',
         'Rules:',
         '- Respond directly to the user message and explain your reasoning briefly.',
+        '- First decide whether the user has provided a coherent context-based rationale for the original phrasing.',
+        '- Treat author intent broadly (poetic craft, rhetorical intent, domain-specific framing, narrative strategy, voice, cadence, argument structure, technical precision).',
+        '- If the user rationale is coherent and context-backed, use stance "withdraw" or "optional_alternative" (not forced correction).',
+        '- Use "withdraw" when no change is needed.',
+        '- Use "optional_alternative" when a rewrite could help but should remain optional.',
+        '- Use "defend" only when there is a clear, material issue that should still be fixed.',
         '- If you revise the suggestion, keep it safe for the same span; do not change start/end.',
         '- Never return a clipped-word replacement or a no-op replacement.',
         '- If no revision is needed, set updated_suggestion to null.',
+        '- Never force smoothness for its own sake; preserve deliberate friction or unconventional craft when defensible.',
         '- Preserve persona perspective in tone and priorities.',
         '',
         `Persona profile: ${persona}`
@@ -232,6 +250,66 @@ function buildWorkshopPrompt({ text, personaKey, suggestion, userReply, thread }
         '',
         'User reply:',
         userReply
+      ].join('\n')
+    }
+  ]
+}
+
+function buildWorkshopCriticPrompt({ text, personaKey, suggestion, userReply, thread, candidate }) {
+  const persona = PERSONA_PROMPTS[personaKey] || PERSONA_PROMPTS.english_teacher
+  const focused = buildFocusedContext(text, suggestion.start, suggestion.end, 3)
+  const threadBlock = thread.length
+    ? thread.map((m) => `${m.role.toUpperCase()}: ${m.text}`).join('\n')
+    : '(no prior workshop messages)'
+
+  return [
+    {
+      role: 'system',
+      content: [
+        'You are pass 2 of workshop: a strict author-intent and flattening-risk critic.',
+        'Return only valid JSON.',
+        '',
+        'Output schema:',
+        '{',
+        '  "withdraw_required": boolean,',
+        '  "reasoning": string,',
+        '  "safe_updated_suggestion": {',
+        '    "replacement": string,',
+        '    "comment": string',
+        '  } | null',
+        '}',
+        '',
+        'Rules:',
+        '- Evaluate whether the pass-1 response preserves defensible author intent.',
+        '- If user rationale is coherent and context-backed, prefer withdrawal or optional framing over forced correction.',
+        '- If pass-1 still imposes a flattening rewrite, set withdraw_required=true.',
+        '- Preserve broad intent categories: poetic craft, rhetoric, narrative strategy, domain framing, voice, cadence, argument, technical precision.',
+        '- Only keep a rewrite if it clearly fixes a material problem without flattening intent.',
+        '- Never return clipped-word or no-op replacements.',
+        '',
+        `Persona profile: ${persona}`
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: [
+        'Draft (full):',
+        text,
+        '',
+        'Focused context:',
+        focused.context,
+        '',
+        'Original suggestion:',
+        JSON.stringify(suggestion),
+        '',
+        'Workshop thread so far:',
+        threadBlock,
+        '',
+        'Latest user reply:',
+        userReply,
+        '',
+        'Pass-1 workshop output:',
+        JSON.stringify(candidate || {})
       ].join('\n')
     }
   ]
@@ -309,9 +387,37 @@ function normalizeWorkshopResult(obj, suggestion) {
       ? obj.assistant_reply.trim()
       : 'I can clarify that suggestion further if you share what feels off.'
 
+  const stanceRaw = typeof obj?.stance === 'string' ? obj.stance.trim().toLowerCase() : ''
+  const stance = WORKSHOP_STANCES.has(stanceRaw)
+    ? stanceRaw
+    : obj?.updated_suggestion
+      ? 'optional_alternative'
+      : 'defend'
+  const authorIntentAcknowledged = obj?.author_intent_acknowledged === true
+  const reasoning =
+    typeof obj?.reasoning === 'string' && obj.reasoning.trim()
+      ? obj.reasoning.trim().slice(0, MAX_REASONING_CHARS)
+      : ''
+
+  if (stance === 'withdraw') {
+    return {
+      assistant_reply: assistantReply,
+      stance,
+      author_intent_acknowledged: authorIntentAcknowledged,
+      reasoning,
+      updated_suggestion: null
+    }
+  }
+
   const updated = obj?.updated_suggestion
   if (!updated || typeof updated !== 'object') {
-    return { assistant_reply: assistantReply, updated_suggestion: null }
+    return {
+      assistant_reply: assistantReply,
+      stance,
+      author_intent_acknowledged: authorIntentAcknowledged,
+      reasoning,
+      updated_suggestion: null
+    }
   }
 
   const replacement =
@@ -320,16 +426,111 @@ function normalizeWorkshopResult(obj, suggestion) {
 
   const changed = replacement !== suggestion.replacement || comment !== suggestion.comment
   if (!changed || replacement === suggestion.source_text) {
-    return { assistant_reply: assistantReply, updated_suggestion: null }
+    return {
+      assistant_reply: assistantReply,
+      stance,
+      author_intent_acknowledged: authorIntentAcknowledged,
+      reasoning,
+      updated_suggestion: null
+    }
   }
 
   return {
     assistant_reply: assistantReply,
+    stance,
+    author_intent_acknowledged: authorIntentAcknowledged,
+    reasoning,
     updated_suggestion: {
       replacement,
       comment
     }
   }
+}
+
+function normalizeWorkshopCriticResult(obj, suggestion) {
+  if (!obj || typeof obj !== 'object') {
+    return { withdraw_required: false, reasoning: '', safe_updated_suggestion: null }
+  }
+
+  const withdrawRequired = obj.withdraw_required === true
+  const reasoning =
+    typeof obj.reasoning === 'string' && obj.reasoning.trim()
+      ? obj.reasoning.trim().slice(0, MAX_REASONING_CHARS)
+      : ''
+
+  const safe = obj.safe_updated_suggestion
+  if (!safe || typeof safe !== 'object') {
+    return { withdraw_required: withdrawRequired, reasoning, safe_updated_suggestion: null }
+  }
+
+  const replacement =
+    typeof safe.replacement === 'string' ? safe.replacement.slice(0, 1200) : suggestion.replacement
+  const comment = typeof safe.comment === 'string' ? safe.comment.slice(0, 700) : suggestion.comment
+
+  const changed = replacement !== suggestion.replacement || comment !== suggestion.comment
+  if (!changed || replacement === suggestion.source_text) {
+    return { withdraw_required: withdrawRequired, reasoning, safe_updated_suggestion: null }
+  }
+
+  return {
+    withdraw_required: withdrawRequired,
+    reasoning,
+    safe_updated_suggestion: { replacement, comment }
+  }
+}
+
+function applyCriticDecision(primary, critic) {
+  if (!critic?.withdraw_required) {
+    if (critic?.safe_updated_suggestion) {
+      return {
+        ...primary,
+        stance: primary.stance === 'withdraw' ? primary.stance : 'optional_alternative',
+        updated_suggestion: critic.safe_updated_suggestion,
+        reasoning: critic.reasoning || primary.reasoning
+      }
+    }
+    return {
+      ...primary,
+      reasoning: critic?.reasoning || primary.reasoning
+    }
+  }
+
+  const assistantReply = primary.assistant_reply
+  const criticReason = critic.reasoning
+  const mergedReply =
+    criticReason && !assistantReply.includes(criticReason)
+      ? `${assistantReply}\n\nGiven your context, this suggestion is withdrawn: ${criticReason}`
+      : assistantReply
+
+  return {
+    assistant_reply: mergedReply,
+    stance: 'withdraw',
+    author_intent_acknowledged: true,
+    reasoning: criticReason || primary.reasoning,
+    updated_suggestion: null
+  }
+}
+
+async function requestJsonFromModels(models, messages) {
+  let lastFailure = null
+
+  for (const model of models) {
+    const upstream = await callOpenAIOnce({ model, messages })
+    if (!upstream.ok) {
+      lastFailure = upstream
+      continue
+    }
+
+    const extracted = extractModelJson(upstream.raw)
+    if (!extracted.ok) {
+      lastFailure = { ok: false, status: 502, raw: extracted.details || extracted.error, model }
+      continue
+    }
+
+    return { ok: true, model, obj: extracted.obj }
+  }
+
+  return { ok: false, failure: lastFailure }
 }
 
 // Main Netlify handler.
@@ -371,30 +572,34 @@ export async function handler(event) {
     })
 
     const models = Array.from(new Set([OPENAI_WORKSHOP_MODEL, ...OPENAI_MODEL_FALLBACKS].filter(Boolean)))
-    let lastFailure = null
-
-    for (const model of models) {
-      const upstream = await callOpenAIOnce({ model, messages })
-      if (!upstream.ok) {
-        lastFailure = upstream
-        continue
-      }
-
-      const extracted = extractModelJson(upstream.raw)
-      if (!extracted.ok) {
-        lastFailure = { ok: false, status: 502, raw: extracted.details || extracted.error, model }
-        continue
-      }
-
-      return jsonResponse(200, normalizeWorkshopResult(extracted.obj, suggestion))
+    const primary = await requestJsonFromModels(models, messages)
+    if (!primary.ok) {
+      const statusCode = primary.failure?.status === 504 ? 504 : 502
+      const upstreamMessage = extractUpstreamErrorMessage(primary.failure?.raw)
+      return jsonError(statusCode, upstreamMessage || 'Workshop request failed.', {
+        model: primary.failure?.model || OPENAI_WORKSHOP_MODEL,
+        details: String(primary.failure?.raw || '').slice(0, 600)
+      })
     }
 
-    const statusCode = lastFailure?.status === 504 ? 504 : 502
-    const upstreamMessage = extractUpstreamErrorMessage(lastFailure?.raw)
-    return jsonError(statusCode, upstreamMessage || 'Workshop request failed.', {
-      model: lastFailure?.model || OPENAI_WORKSHOP_MODEL,
-      details: String(lastFailure?.raw || '').slice(0, 600)
+    const normalizedPrimary = normalizeWorkshopResult(primary.obj, suggestion)
+    const criticMessages = buildWorkshopCriticPrompt({
+      text,
+      personaKey: persona,
+      suggestion,
+      userReply,
+      thread,
+      candidate: normalizedPrimary
     })
+    const criticModels = Array.from(new Set([primary.model, ...models].filter(Boolean)))
+    const critic = await requestJsonFromModels(criticModels, criticMessages)
+
+    if (critic.ok) {
+      const normalizedCritic = normalizeWorkshopCriticResult(critic.obj, suggestion)
+      return jsonResponse(200, applyCriticDecision(normalizedPrimary, normalizedCritic))
+    }
+
+    return jsonResponse(200, normalizedPrimary)
   } catch (error) {
     return jsonError(500, 'Unexpected server error.', {
       details: typeof error?.message === 'string' ? error.message : 'Unknown error'

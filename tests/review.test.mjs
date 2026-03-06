@@ -531,19 +531,41 @@ test('workshop includes full draft and focused context, then returns reply JSON'
 
     const seenBodies = []
 
+    let callCount = 0
+
     global.fetch = async (_url, options) => {
       const body = JSON.parse(options.body)
       seenBodies.push(body)
+
+      callCount += 1
+      if (callCount === 1) {
+        return fakeResponse({
+          ok: true,
+          status: 200,
+          body: successEnvelope(
+            {
+              assistant_reply: 'Good pushback. Let us keep the urgency but smooth the cadence.',
+              stance: 'optional_alternative',
+              author_intent_acknowledged: true,
+              reasoning: 'Your rationale is coherent, so this rewrite should remain optional.',
+              updated_suggestion: {
+                replacement: 'Then it vanished.',
+                comment: 'This keeps continuity and avoids clipped phrasing.'
+              }
+            },
+            'gpt-5.2'
+          )
+        })
+      }
+
       return fakeResponse({
         ok: true,
         status: 200,
         body: successEnvelope(
           {
-            assistant_reply: 'Good pushback. Let us keep the urgency but smooth the cadence.',
-            updated_suggestion: {
-              replacement: 'Then it vanished.',
-              comment: 'This keeps continuity and avoids clipped phrasing.'
-            }
+            withdraw_required: false,
+            reasoning: 'Optional framing is appropriate.',
+            safe_updated_suggestion: null
           },
           'gpt-5.2'
         )
@@ -576,17 +598,105 @@ test('workshop includes full draft and focused context, then returns reply JSON'
     })
 
     assert.equal(response.statusCode, 200)
-    assert.equal(seenBodies.length, 1)
+    assert.equal(seenBodies.length, 2)
 
-    const userMessage = seenBodies[0].messages?.[1]?.content || ''
-    assert.match(userMessage, /Draft \(full\):/)
-    assert.match(userMessage, /Focused context/)
-    assert.match(userMessage, /Original suggestion/)
-    assert.match(userMessage, /User reply:/)
+    const primaryUserMessage = seenBodies[0].messages?.[1]?.content || ''
+    assert.match(primaryUserMessage, /Draft \(full\):/)
+    assert.match(primaryUserMessage, /Focused context/)
+    assert.match(primaryUserMessage, /Original suggestion/)
+    assert.match(primaryUserMessage, /User reply:/)
+
+    const criticUserMessage = seenBodies[1].messages?.[1]?.content || ''
+    assert.match(criticUserMessage, /Pass-1 workshop output:/)
+    assert.match(criticUserMessage, /Latest user reply:/)
 
     const payload = JSON.parse(response.body)
     assert.match(payload.assistant_reply, /Good pushback/)
+    assert.equal(payload.stance, 'optional_alternative')
+    assert.equal(payload.author_intent_acknowledged, true)
     assert.equal(payload.updated_suggestion.replacement, 'Then it vanished.')
+  } finally {
+    global.fetch = originalFetch
+    restoreEnv()
+  }
+})
+
+test('workshop critic pass can force withdrawal when primary response flattens defensible intent', { concurrency: false }, async () => {
+  const restoreEnv = snapshotEnv()
+  const originalFetch = global.fetch
+
+  try {
+    process.env.OPENAI_API_KEY = 'test-key'
+    process.env.OPENAI_MODEL = 'gpt-5.2'
+    process.env.OPENAI_MODEL_FALLBACKS = 'gpt-4o-mini'
+
+    let callCount = 0
+    global.fetch = async () => {
+      callCount += 1
+
+      if (callCount === 1) {
+        return fakeResponse({
+          ok: true,
+          status: 200,
+          body: successEnvelope(
+            {
+              assistant_reply: 'I still recommend revising this line for smoothness.',
+              stance: 'defend',
+              author_intent_acknowledged: false,
+              reasoning: 'The line is rough.',
+              updated_suggestion: {
+                replacement: 'A smoother rewritten line.',
+                comment: 'This reads more conventionally.'
+              }
+            },
+            'gpt-5.2'
+          )
+        })
+      }
+
+      return fakeResponse({
+        ok: true,
+        status: 200,
+        body: successEnvelope(
+          {
+            withdraw_required: true,
+            reasoning: 'User supplied coherent craft intent with full-context support.',
+            safe_updated_suggestion: null
+          },
+          'gpt-5.2'
+        )
+      })
+    }
+
+    const handler = await loadWorkshopHandlerFresh()
+    const response = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({
+        text: 'Intentional rough line.',
+        persona: 'college_professor',
+        suggestion: {
+          id: 's1',
+          start: 0,
+          end: 10,
+          source_text: 'Intentional',
+          replacement: 'Conventional',
+          comment: 'Smooth this.',
+          kind: 'edit',
+          severity: 'suggestion'
+        },
+        user_reply: 'This roughness is intentional and central to the voice.',
+        thread: [{ role: 'assistant', text: 'Initial recommendation.' }]
+      })
+    })
+
+    assert.equal(response.statusCode, 200)
+    assert.equal(callCount, 2)
+
+    const payload = JSON.parse(response.body)
+    assert.equal(payload.stance, 'withdraw')
+    assert.equal(payload.author_intent_acknowledged, true)
+    assert.equal(payload.updated_suggestion, null)
+    assert.match(payload.reasoning, /coherent craft intent/i)
   } finally {
     global.fetch = originalFetch
     restoreEnv()

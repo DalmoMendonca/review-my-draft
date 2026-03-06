@@ -157,13 +157,26 @@ function parseJsonSafely(raw) {
 // Workshop thread helpers keep API payloads predictable and UI-safe.
 function normalizeThreadPayload(raw) {
   if (!raw || typeof raw !== 'object') {
-    return { assistantReply: 'I could not process that. Try again.', updatedSuggestion: null }
+    return {
+      assistantReply: 'I could not process that. Try again.',
+      updatedSuggestion: null,
+      stance: 'defend',
+      authorIntentAcknowledged: false,
+      reasoning: ''
+    }
   }
 
   const assistantReply =
     typeof raw.assistant_reply === 'string' && raw.assistant_reply.trim()
       ? raw.assistant_reply.trim()
       : 'I could not process that. Try again.'
+  const stanceRaw = typeof raw.stance === 'string' ? raw.stance.trim().toLowerCase() : ''
+  const stance =
+    stanceRaw === 'withdraw' || stanceRaw === 'optional_alternative' || stanceRaw === 'defend'
+      ? stanceRaw
+      : 'defend'
+  const authorIntentAcknowledged = raw.author_intent_acknowledged === true
+  const reasoning = typeof raw.reasoning === 'string' ? raw.reasoning.trim().slice(0, 400) : ''
 
   const updatedRaw = raw.updated_suggestion
   const updatedSuggestion =
@@ -174,7 +187,29 @@ function normalizeThreadPayload(raw) {
         }
       : null
 
-  return { assistantReply, updatedSuggestion }
+  return { assistantReply, updatedSuggestion, stance, authorIntentAcknowledged, reasoning }
+}
+
+function workshopStatusMeta(suggestion) {
+  if (suggestion?.workshopStatus === 'withdrawn') {
+    return {
+      label: 'Suggestion withdrawn (author intent accepted)',
+      tone: 'withdrawn'
+    }
+  }
+  if (suggestion?.workshopStatus === 'optional_alternative') {
+    return {
+      label: 'Optional alternative after workshop',
+      tone: 'optional'
+    }
+  }
+  if (suggestion?.workshopStatus === 'defended') {
+    return {
+      label: 'Suggestion still recommended',
+      tone: 'defended'
+    }
+  }
+  return null
 }
 
 function createDefaultThreadState() {
@@ -645,6 +680,7 @@ export default function App() {
   function acceptSuggestion(id) {
     const s = suggestions.find((x) => x.id === id)
     if (!s) return
+    if (s.workshopStatus === 'withdrawn') return
 
     const beforeText = draft
     const selectedText = beforeText.slice(s.start, s.end)
@@ -809,27 +845,38 @@ export default function App() {
         }
       })
 
-      // If the assistant proposes a revised suggestion, update that card in-place.
-      if (normalized.updatedSuggestion) {
-        setSuggestions((prev) =>
-          prev.map((item) =>
-            item.id === id
-              ? {
-                  ...item,
-                  replacement:
-                    typeof normalized.updatedSuggestion.replacement === 'string'
-                      ? normalized.updatedSuggestion.replacement
-                      : item.replacement,
-                  comment:
-                    typeof normalized.updatedSuggestion.comment === 'string' &&
-                    normalized.updatedSuggestion.comment
-                      ? normalized.updatedSuggestion.comment
-                      : item.comment
-                }
-              : item
-          )
-        )
-      }
+      // Persist workshop stance so users can see whether a suggestion was withdrawn.
+      setSuggestions((prev) =>
+        prev.map((item) => {
+          if (item.id !== id) return item
+
+          const workshopStatus =
+            normalized.stance === 'withdraw'
+              ? 'withdrawn'
+              : normalized.stance === 'optional_alternative'
+                ? 'optional_alternative'
+                : 'defended'
+          const nextReplacement =
+            normalized.updatedSuggestion && typeof normalized.updatedSuggestion.replacement === 'string'
+              ? normalized.updatedSuggestion.replacement
+              : item.replacement
+          const nextComment =
+            normalized.updatedSuggestion &&
+            typeof normalized.updatedSuggestion.comment === 'string' &&
+            normalized.updatedSuggestion.comment
+              ? normalized.updatedSuggestion.comment
+              : item.comment
+
+          return {
+            ...item,
+            replacement: nextReplacement,
+            comment: nextComment,
+            workshopStatus,
+            workshopReasoning: normalized.reasoning || '',
+            workshopAcknowledgedIntent: normalized.authorIntentAcknowledged === true
+          }
+        })
+      )
     } catch (error) {
       setCommentThreads((prev) => {
         const current = prev[id] || createDefaultThreadState()
@@ -1066,6 +1113,8 @@ function CommentsPanel({
     <div className="comments">
       {suggestions.map((s) => {
         const thread = threads?.[s.id] || createDefaultThreadState()
+        const status = workshopStatusMeta(s)
+        const isWithdrawn = s.workshopStatus === 'withdrawn'
 
         return (
           <div
@@ -1095,6 +1144,15 @@ function CommentsPanel({
 
             {s.comment ? <div className="commentBody">{s.comment}</div> : null}
 
+            {status ? (
+              <div className={`commentStatus ${status.tone}`}>
+                <div className="commentStatusLabel">{status.label}</div>
+                {s.workshopReasoning ? (
+                  <div className="commentStatusReason">{s.workshopReasoning}</div>
+                ) : null}
+              </div>
+            ) : null}
+
             {typeof s.replacement === 'string' ? (
               <div className="commentEdit">
                 <div className="editLabel">Proposed text</div>
@@ -1114,12 +1172,13 @@ function CommentsPanel({
               </button>
               <button
                 className="btnSolid"
+                disabled={isWithdrawn}
                 onClick={(event) => {
                   event.stopPropagation()
                   onAccept(s.id)
                 }}
               >
-                Accept
+                {isWithdrawn ? 'Withdrawn' : 'Accept'}
               </button>
             </div>
 
