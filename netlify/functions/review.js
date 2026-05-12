@@ -18,7 +18,7 @@ const REVIEW_CHUNK_TARGET_CHARS = Number(process.env.REVIEW_CHUNK_TARGET_CHARS |
 const REVIEW_CHUNK_OVERLAP_CHARS = Number(process.env.REVIEW_CHUNK_OVERLAP_CHARS || 280)
 const REVIEW_MAX_CHUNKS = Number(process.env.REVIEW_MAX_CHUNKS || 6)
 
-const MAX_CHARS = 20000
+const MAX_CHARS = 50000
 const MAX_SUGGESTIONS = 30
 
 // Persona-specific system instructions used in every review pass.

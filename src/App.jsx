@@ -2,7 +2,7 @@
 import { PERSONAS } from './personas.js'
 
 // Global UI limits and timing knobs used for local UX progress feedback.
-const MAX_CHARS = 20000
+const MAX_CHARS = 50000
 const REQUEST_TIMEOUT_MS = 120000
 const CHUNK_TRIGGER_CHARS = 8000
 const CHUNK_TARGET_CHARS = 4200

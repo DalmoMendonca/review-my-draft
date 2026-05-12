@@ -490,13 +490,13 @@ test('rejects clipped mid-word spans even if every pass returns them', { concurr
   }
 })
 
-test('rejects payloads above 20000 chars before any upstream call', { concurrency: false }, async () => {
+test('rejects payloads above 50000 chars before any upstream call', { concurrency: false }, async () => {
   const restoreEnv = snapshotEnv()
   const originalFetch = global.fetch
 
   try {
     process.env.OPENAI_API_KEY = 'test-key'
-    process.env.OPENAI_MODEL = 'gpt-5.2'
+    process.env.OPENAI_MODEL = 'gpt-5.4-mini'
     process.env.OPENAI_MODEL_FALLBACKS = 'gpt-4o-mini'
 
     global.fetch = async () => {

@@ -28,7 +28,7 @@ const OPENAI_MODEL_FALLBACKS = (process.env.OPENAI_MODEL_FALLBACKS || 'gpt-4o-mi
   .filter(Boolean)
 const WORKSHOP_TIMEOUT_MS = Number(process.env.WORKSHOP_TIMEOUT_MS || 26000)
 
-const MAX_CHARS = 20000
+const MAX_CHARS = 50000
 const MAX_USER_REPLY = 1800
 const MAX_THREAD_MESSAGES = 12
 const MAX_REASONING_CHARS = 800
